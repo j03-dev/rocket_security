@@ -42,6 +42,12 @@ pub fn create_new_token(claims: RegisteredClaims) -> Result<String, jwt::Error> 
     Ok(new_token.as_str().to_string())
 }
 
+#[derive(Debug)]
+pub enum AuthError {
+    MissingOrInvalidHeader,
+    InvalidToken,
+}
+
 #[derive(Clone)]
 pub struct Auth {
     pub subject: String,
@@ -49,33 +55,18 @@ pub struct Auth {
 
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for Auth {
-    type Error = ();
+    type Error = AuthError;
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let t = request.headers().get("Authorization").next();
-        println!("{t:#?}");
-
-        request
-            .headers()
-            .get("Authorization")
-            .next()
-            .and_then(|token| {
-                if token == format!("Bearer {token}") {
-                    println!("the verification is true");
-                    match read_token(token) {
-                        Ok(subject) => Some(Auth { subject }),
-                        Err(err) => {
-                            println!("{err}");
-                            None
-                        }
-                    }
-                } else {
-                    println!("the verification is false");
-                    None
+        const BEARER_PREFIX: &str = "Bearer ";
+        if let Some(auth_header) = request.headers().get_one("Authorization") {
+            if let Some(token) = auth_header.strip_prefix(BEARER_PREFIX) {
+                return match read_token(&token) {
+                    Ok(subject) => Outcome::Success(Auth { subject }),
+                    Err(_) => Outcome::Error((Status::Unauthorized, AuthError::InvalidToken))
                 }
-            })
-            .map_or(Outcome::Error((Status::Unauthorized, ())), |auth| {
-                Outcome::Success(auth)
-            })
+            }
+        }
+        Outcome::Error((Status::Unauthorized, AuthError::MissingOrInvalidHeader))
     }
 }
