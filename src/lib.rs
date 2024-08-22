@@ -61,14 +61,16 @@ impl<'r> FromRequest<'r> for Auth {
             .next()
             .and_then(|token| {
                 if token == format!("Bearer {token}") {
+                    println!("the verification is true");
                     match read_token(token) {
                         Ok(subject) => Some(Auth { subject }),
                         Err(err) => {
-                            eprintln!("{err}");
+                            println!("{err}");
                             None
                         }
                     }
                 } else {
+                    println!("the verification is false");
                     None
                 }
             })
