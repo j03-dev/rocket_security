@@ -61,8 +61,13 @@ impl<'r> FromRequest<'r> for Auth {
             .next()
             .and_then(|token| {
                 if token == format!("Bearer {token}") {
-                    println!("is true");
-                    read_token(token).map_or(None, |subject| Some(Auth { subject }))
+                    match read_token(token) {
+                        Ok(subject) => Some(Auth { subject }),
+                        Err(err) => {
+                            eprintln!("{err}");
+                            None
+                        }
+                    }
                 } else {
                     None
                 }
