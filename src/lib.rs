@@ -1,45 +1,67 @@
-use crypto::{digest::Digest, sha3};
-use hmac::digest::{core_api::CoreWrapper, KeyInit};
-use hmac::{Hmac, HmacCore};
-use jwt::{Header, SignWithKey, Token, VerifyWithKey};
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome};
 use rocket::Request;
-use sha2::Sha256;
 
-pub use jwt::RegisteredClaims;
+use anyhow::{Context, Result};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use serde::{Deserialize, Serialize};
 
-pub fn hash(input: &str) -> String {
-    let mut hasher = sha3::Sha3::sha3_256();
-    hasher.input_str(input);
-    hasher.result_str()
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Claims {
+    pub sub: String,
+    pub exp: usize,
+    pub aud: Option<String>,
+    pub iat: Option<usize>,
+    pub iss: Option<String>,
+    pub nbf: Option<usize>,
 }
 
-fn get_secret_key() -> Vec<u8> {
-    let secret_key = std::env::var("SECRET_KEY").expect("Secret key must be set");
-    secret_key.chars().map(|s| s as u8).collect()
+impl Default for Claims {
+    fn default() -> Self {
+        Self {
+            sub: "anonymous".to_owned(),
+            exp: 1,
+            aud: None,
+            iat: None,
+            iss: None,
+            nbf: None,
+        }
+    }
 }
 
-fn signe_key() -> CoreWrapper<HmacCore<Sha256>> {
-    let secret_key = get_secret_key();
-    Hmac::<Sha256>::new_from_slice(&secret_key[..]).unwrap()
+fn secret_key() -> Result<Vec<u8>> {
+    let sk = std::env::var("SECRET_KEY")?;
+    Ok(sk.chars().map(|s| s as u8).collect())
 }
 
-fn read_token(token_str: &str) -> Result<String, jwt::Error> {
-    let token = Token::<Header, RegisteredClaims, _>::parse_unverified(token_str)?;
+pub fn generate_jwt(claims: Claims) -> Result<String> {
+    let expiration = chrono::Utc::now()
+        .checked_add_signed(chrono::Duration::hours(claims.exp as i64))
+        .context("Failed to calculate expiration time for JWT claims")?
+        .timestamp() as usize;
 
-    token
-        .verify_with_key(&signe_key())
-        .and_then(|token_verify| match token_verify.claims().clone().subject {
-            Some(subject) => Ok(subject),
-            None => Err(jwt::Error::NoClaimsComponent),
-        })
-        .map_or(Err(jwt::Error::InvalidSignature), Ok)
+    let claims = Claims {
+        exp: expiration,
+        ..claims
+    };
+
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(&secret_key()?),
+    )?;
+
+    Ok(token)
 }
 
-pub fn create_new_token(claims: RegisteredClaims) -> Result<String, jwt::Error> {
-    let new_token = Token::new(Header::default(), claims).sign_with_key(&signe_key())?;
-    Ok(new_token.as_str().to_string())
+fn verify_jwt<T: for<'de> Deserialize<'de>>(token: &str) -> Result<T> {
+    let token_data = decode::<T>(
+        token,
+        &DecodingKey::from_secret(&secret_key()?),
+        &Validation::new(Algorithm::HS256),
+    )?;
+
+    Ok(token_data.claims)
 }
 
 #[derive(Debug)]
@@ -61,10 +83,12 @@ impl<'r> FromRequest<'r> for Auth {
         const BEARER_PREFIX: &str = "Bearer ";
         if let Some(auth_header) = request.headers().get_one("Authorization") {
             if let Some(token) = auth_header.strip_prefix(BEARER_PREFIX) {
-                return match read_token(&token) {
-                    Ok(subject) => Outcome::Success(Auth { subject }),
-                    Err(_) => Outcome::Error((Status::Unauthorized, AuthError::InvalidToken))
-                }
+                return match verify_jwt::<Claims>(&token) {
+                    Ok(claims) => Outcome::Success(Auth {
+                        subject: claims.sub,
+                    }),
+                    Err(_) => Outcome::Error((Status::Unauthorized, AuthError::InvalidToken)),
+                };
             }
         }
         Outcome::Error((Status::Unauthorized, AuthError::MissingOrInvalidHeader))
