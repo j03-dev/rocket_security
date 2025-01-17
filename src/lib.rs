@@ -29,12 +29,8 @@ impl Default for Claims {
     }
 }
 
-fn secret_key() -> Result<Vec<u8>> {
-    let sk = std::env::var("SECRET_KEY")?;
-    Ok(sk.chars().map(|s| s as u8).collect())
-}
-
 pub fn generate_jwt(claims: Claims) -> Result<String> {
+    let secret_key = std::env::var("SECRET_KEY")?;
     let expiration = chrono::Utc::now()
         .checked_add_signed(chrono::Duration::hours(claims.exp as i64))
         .context("Failed to calculate expiration time for JWT claims")?
@@ -48,16 +44,17 @@ pub fn generate_jwt(claims: Claims) -> Result<String> {
     let token = encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(&secret_key()?),
+        &EncodingKey::from_secret(secret_key.as_bytes()),
     )?;
 
     Ok(token)
 }
 
 fn verify_jwt<T: for<'de> Deserialize<'de>>(token: &str) -> Result<T> {
+    let secret_key = std::env::var("SECRET_KEY")?;
     let token_data = decode::<T>(
         token,
-        &DecodingKey::from_secret(&secret_key()?),
+        &DecodingKey::from_secret(secret_key.as_bytes()),
         &Validation::new(Algorithm::HS256),
     )?;
 
